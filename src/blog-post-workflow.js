@@ -108,6 +108,10 @@ let parser = new Parser({
   },
   customFields: {
     item: [...customTagArgs]
+  },
+  defaultRSS: 2.0,
+  requestOptions: {
+    timeout: 60000,
   }
 });
 
@@ -131,101 +135,113 @@ feedList.forEach((siteUrl) => {
           // To handle duplicate filter
           const appendedPostTitles = [];
           const appendedPostDesc = [];
-          const posts = responsePosts
-            .filter(ignoreStackOverflowComments)
-            .filter(ignoreStackExchangeComments)
-            .filter(dateFilter)
-            .map((item) => {
-              // Validating keys to avoid errors
-              if (ENABLE_SORT && ENABLE_VALIDATION && !item.pubDate) {
-                reject('Cannot read response->item->pubDate');
-              }
-              
-              // Handle missing titles gracefully
-              if (ENABLE_VALIDATION && !item.title) {
-                // Either skip the item by returning null
-                // or use a fallback title (from URL or a default value)
-                core.warning(`Missing title for item with link: ${item.link || 'unknown'}`);
-                if (core.getInput('skip_items_without_title') === 'true') {
-                  return null; // This item will be filtered out later
-                }
-                // Use URL as fallback or a default text
-                item.title = item.link ? 
-                  `[No Title] - ${item.link.split('/').pop() || 'Post'}` : 
-                  'Post without title';
-              }
-              
-              if (ENABLE_VALIDATION && !item.link) {
-                reject('Cannot read response->item->link');
-              }
-              // Custom tags
-              let customTags = {};
-              Object.keys(CUSTOM_TAGS).forEach((tag) => {
-                if (item[tag]) {
-                  Object.assign(customTags, {[tag]: item[tag]});
-                }
-              });
-              const categories = item.categories ?  categoriesToArray(item.categories) : [];
-              let post = {
-                title: item.title ? item.title.trim() : item.title, // Handle null safely
-                url: item.link.trim(),
-                description: item.content ? item.content : '',
-                ...customTags,
-                categories
-              };
-
-              if (ENABLE_SORT) {
-                post.date = new Date(item.pubDate.trim());
-              }
-
-              if (TITLE_MAX_LENGTH && post && post.title) {
-                // Trimming the title
-                post.title = truncateString(post.title, TITLE_MAX_LENGTH);
-              }
-
-              if (DESCRIPTION_MAX_LENGTH && post && post.description) {
-                // Trimming the description
-                post.description = truncateString(post.description, DESCRIPTION_MAX_LENGTH);
-              }
-
-              // Advanced content manipulation using javascript code
-              if (ITEM_EXEC) {
+          
+          try {
+            const posts = responsePosts
+              .filter(ignoreStackOverflowComments)
+              .filter(ignoreStackExchangeComments)
+              .filter(dateFilter)
+              .map((item) => {
                 try {
-                  eval(ITEM_EXEC);
-                } catch (e) {
-                  core.error('Failure in executing `item_exec` parameter');
-                  core.error(e);
-                  process.exit(1);
-                }
-              }
-              if (post && core.getInput('remove_duplicates') === 'true') {
-                if (
-                  appendedPostTitles.indexOf(post.title.trim()) !== -1 ||
-                  appendedPostDesc.indexOf(post.description.trim()) !== -1
-                ) {
-                  post = null;
-                } else {
-                  if (post.title) {
-                    appendedPostTitles.push(post.title.trim());
+                  // Handle missing data more gracefully                  
+                  if (!item.title) {
+                    core.warning(`Missing title for item with link: ${item.link || 'unknown'}`);
+                    item.title = item.link ? 
+                      `[No Title] - ${item.link.split('/').pop() || 'Post'}` : 
+                      'Post without title';
                   }
-                  if (post.description) {
-                    appendedPostDesc.push(post.description.trim());
+                  
+                  if (!item.link) {
+                    core.warning(`Missing link for item, skipping`);
+                    return null; // Skip items without links
                   }
-                }
-              }
+                  
+                  // Only validate pubDate if sorting is enabled
+                  if (ENABLE_SORT && !item.pubDate) {
+                    core.warning(`Missing pubDate for item with title: ${item.title}, using current date`);
+                    item.pubDate = new Date().toISOString();
+                  }
+                  
+                  // Custom tags
+                  let customTags = {};
+                  Object.keys(CUSTOM_TAGS).forEach((tag) => {
+                    if (item[tag]) {
+                      Object.assign(customTags, {[tag]: item[tag]});
+                    }
+                  });
+                  
+                  const categories = item.categories ? categoriesToArray(item.categories) : [];
+                  
+                  let post = {
+                    title: item.title ? item.title.trim() : item.title,
+                    url: item.link ? item.link.trim() : '#',
+                    description: item.content ? item.content : '',
+                    ...customTags,
+                    categories
+                  };
 
-              // Doing HTML encoding at last ref: #117
-              const disableHtmlEncoding = core.getInput('disable_html_encoding') !== 'false';
-              if (!disableHtmlEncoding && post) {
-                Object.keys(post).forEach((key)=> {
-                  if (typeof post[key] === 'string' && key !== 'url') {
-                    post[key] = escapeHTML(post[key]);
+                  if (ENABLE_SORT) {
+                    post.date = new Date(item.pubDate.trim());
                   }
-                });
-              }
-              return post;
-            });
-          resolve(posts);
+
+                  if (TITLE_MAX_LENGTH && post && post.title) {
+                    // Trimming the title
+                    post.title = truncateString(post.title, TITLE_MAX_LENGTH);
+                  }
+
+                  if (DESCRIPTION_MAX_LENGTH && post && post.description) {
+                    // Trimming the description
+                    post.description = truncateString(post.description, DESCRIPTION_MAX_LENGTH);
+                  }
+
+                  // Advanced content manipulation using javascript code
+                  if (ITEM_EXEC) {
+                    try {
+                      eval(ITEM_EXEC);
+                    } catch (e) {
+                      core.error('Failure in executing `item_exec` parameter');
+                      core.error(e);
+                      process.exit(1);
+                    }
+                  }
+                  if (post && core.getInput('remove_duplicates') === 'true') {
+                    if (
+                      appendedPostTitles.indexOf(post.title.trim()) !== -1 ||
+                      appendedPostDesc.indexOf(post.description.trim()) !== -1
+                    ) {
+                      post = null;
+                    } else {
+                      if (post.title) {
+                        appendedPostTitles.push(post.title.trim());
+                      }
+                      if (post.description) {
+                        appendedPostDesc.push(post.description.trim());
+                      }
+                    }
+                  }
+
+                  // Doing HTML encoding at last ref: #117
+                  const disableHtmlEncoding = core.getInput('disable_html_encoding') !== 'false';
+                  if (!disableHtmlEncoding && post) {
+                    Object.keys(post).forEach((key)=> {
+                      if (typeof post[key] === 'string' && key !== 'url') {
+                        post[key] = escapeHTML(post[key]);
+                      }
+                    });
+                  }
+                  return post;
+                } catch (itemError) {
+                  core.warning(`Error processing item: ${itemError.message || itemError}`);
+                  return null; // Skip problematic items
+                }
+              })
+              .filter(post => post !== null); // Remove nulls early
+              
+            resolve(posts);
+          } catch (processingError) {
+            core.error(`Error processing feed: ${processingError.message || processingError}`);
+            resolve([]); // Return empty array instead of failing completely
+          }
         }
       }, (err) => {
         reject(err);
